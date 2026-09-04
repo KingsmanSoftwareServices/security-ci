@@ -1,0 +1,123 @@
+name: Scheduled Security Scan (reusable)
+
+# Re-scans the calling repository on a schedule. Advisory databases and campaign
+# intelligence change after a pull request merges, so a repository that was
+# clean at merge time is not necessarily clean today.
+on:
+  workflow_call:
+    inputs:
+      security-ci-ref:
+        description: Pinned neotree/security-ci commit SHA. Must match the caller's `uses:`.
+        type: string
+        required: true
+      policy-overlay:
+        type: string
+        default: security/policy.json
+      gitleaks-ignore:
+        type: string
+        default: security/gitleaks-ignore.txt
+      enable-all-branch-scan:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  repository-policy:
+    name: Scheduled Malware/Policy Scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: neotree/security-ci
+          ref: ${{ inputs.security-ci-ref }}
+          path: scanner
+          persist-credentials: false
+      - name: Repository malware and policy scan
+        shell: bash
+        env:
+          OVERLAY: ${{ inputs.policy-overlay }}
+        run: |
+          set -Eeuo pipefail
+          args=(--root repo --policy scanner/security/policy.defaults.json
+                --iocs scanner/security/polinrider_iocs.json
+                --report reports/scheduled-security-report.json
+                --sarif reports/scheduled-security-report.sarif)
+          if [ -f "repo/${OVERLAY}" ]; then args+=(--policy-overlay "repo/${OVERLAY}"); fi
+          python3 scanner/security/scan_repo.py "${args[@]}"
+      - name: Upload scan report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scheduled-policy-report
+          path: reports/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  all-branches:
+    name: All-Branch Malware Scan
+    # A pull-request gate only ever sees the branch being merged. The reported "commit
+    # twin" technique force-pushes infected commits across many branches at once, so a
+    # payload can sit on a stale branch indefinitely, one `git checkout` from a developer.
+    if: ${{ inputs.enable-all-branch-scan }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: neotree/security-ci
+          ref: ${{ inputs.security-ci-ref }}
+          path: scanner
+          persist-credentials: false
+      - name: Scan every remote branch
+        env:
+          TARGET_REPO: repo
+          POLICY_OVERLAY: ${{ inputs.policy-overlay }}
+        run: ./scanner/security/scan_all_branches.sh
+
+  gitleaks:
+    name: Scheduled Secret History Scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: neotree/security-ci
+          ref: ${{ inputs.security-ci-ref }}
+          path: scanner
+          persist-credentials: false
+      - name: Gitleaks FULL Git history scan
+        shell: bash
+        env:
+          GITLEAKS_IGNORE_PATH: repo/${{ inputs.gitleaks-ignore }}
+        # No base SHA: this is the scan that walks everything, and the one that catches a
+        # secret predating the pipeline. Pull requests get the cheap incremental scope.
+        run: ./scanner/security/run_secret_scan.sh repo

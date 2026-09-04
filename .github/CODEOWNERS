@@ -1,0 +1,14 @@
+# Code Owners for the shared security pipeline.
+#
+# Everything here is a security control for several repositories, so every path is owned.
+# Branch protection must have "Require review from Code Owners" enabled, and the team must
+# have at least Write access - GitHub rejects an entry whose team lacks access with
+# "Unknown owner", and the control then does nothing until it is fixed.
+#
+# @neotree/core-devs has three members, so a pull-request author - who never satisfies
+# their own Code Owner review - always leaves two possible reviewers.
+
+*                       @neotree/core-devs
+/security/              @neotree/core-devs
+/.github/workflows/     @neotree/core-devs
+/templates/             @neotree/core-devs
